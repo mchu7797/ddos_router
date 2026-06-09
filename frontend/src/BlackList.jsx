@@ -221,7 +221,7 @@ function BlackList() {
                                 onClick={handleBlack}
                                 disabled={selectedWhiteList === 0}
                             >
-                                차단
+                                삭제
                             </Button>
                         </Stack>
                     </Box>

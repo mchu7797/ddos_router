@@ -5,9 +5,13 @@ import {
     Button,
     Card,
     CardContent,
+    FormControl,
     FormControlLabel,
     IconButton,
+    InputLabel,
+    MenuItem,
     Paper,
+    Select,
     Stack,
     Switch,
     Tab,
@@ -18,12 +22,12 @@ import {
     TableHead,
     TableRow,
     Tabs,
+    TextField,
     Toolbar,
     Tooltip,
     Typography
 } from '@mui/material';
 import {
-    AutorenewSharp as AutoUpdateIcon,
     Logout as LogoutIcon,
     Refresh as RefreshIcon,
     Settings as SettingsIcon,
@@ -134,8 +138,13 @@ function InfoPanel() {
     const [updateError, setUpdateError] = useState(null);
     const [selectedIP, setSelectedIP] = useState(null);
     const [ipInfo, setIpInfo] = useState([]);
-    const [logIndex, setLogIndex] = useState({});
     const [networkDevices, setNetworkDevices] = useState([]);
+    // eslint-disable-next-line no-unused-vars
+    const [monitoredIPs, setMonitoredIPs] = useState(new Set());
+    const [page, setPage] = useState(0);
+    const [rowsPerPage, setRowsPerPage] = useState(50);
+    const [searchIP, setSearchIP] = useState("");
+    const [filterProtocol, setFilterProtocol] = useState("");
 
     const InfoLabel = {
     "mac" : "맥주소",
@@ -145,6 +154,7 @@ function InfoPanel() {
     "memory_usage" : "메모리 사용량",
     "uptime" : "사용시간",
     "connected_device_count" : "연결된 기기 수",
+    "memory_usage" : "메모리 사용량",
     "upload_speed" : "업로드 속도",
     "download_speed" : "다운로드 속도"
     }
@@ -176,10 +186,24 @@ function InfoPanel() {
 
     const fetchRouterInfo = async () => {
         try {
-            const [routerData, connectionsData] = await Promise.all([
+            const [routerData, connectionsData, blackList, whiteList] = await Promise.all([
                 apiClient.getInformation(),
-                apiClient.getConnections()
+                apiClient.getConnections(),
+                apiClient.getProtection().catch(() => []),
+                apiClient.getWhiteList().catch(() => [])
             ]);
+            // 모니터링 중인 IP 목록 생성 (블랙리스트 + 화이트리스트)
+            const monitored = new Set();
+            blackList.forEach(item => {
+                const ip = typeof item === 'string' ? item : item.ip;
+                if (ip) monitored.add(ip);
+            });
+            whiteList.forEach(item => {
+                const ip = typeof item === 'string' ? item : item.ip;
+                if (ip) monitored.add(ip);
+            });
+            setMonitoredIPs(monitored);
+
             // routerData를 직접 한글화하여 상태로 설정
             if (routerData) {
                 const koreanData = formatRouterInfo(routerData);
@@ -190,9 +214,11 @@ function InfoPanel() {
             }
             
             if (Array.isArray(connectionsData)) {
-                setConnectionLog(connectionsData);
+                // 최신 1000개 로그만 유지 (메모리 관리)
+                const limitedLog = connectionsData.slice(0, 1000);
+                setConnectionLog(limitedLog);
                 // 연결 로그에서 네트워크 장치 정보 추출
-                const devices = extractNetworkDevices(connectionsData);
+                const devices = extractNetworkDevices(connectionsData, monitored);
                 setNetworkDevices(devices);
             } else {
                 setConnectionLog([]);
@@ -207,7 +233,7 @@ function InfoPanel() {
 
 
     // 연결 로그에서 네트워크 장치 정보 추출
-    const extractNetworkDevices = (connections) => {
+    const extractNetworkDevices = (connections, monitoredIPs = new Set()) => {
         const deviceMap = new Map();
         // 라우터 IP 목록 (게이트웨이 IP들 제외)
         const routerIPs = ['192.168.1.1', '192.168.2.1', '10.0.0.1', '172.16.0.1'];
@@ -232,7 +258,7 @@ function InfoPanel() {
                             ip: ip,
                             hostname: `Device-${ip.split('.').pop()}`,
                             type: getDeviceType(conn.dest_port || conn.source_port),
-                            status: 'online',
+                            status: monitoredIPs.has(ip) ? 'monitored' : 'online',
                             lastSeen: new Date().toLocaleString('ko-KR'),
                             connections: 0,
                             totalBytes: 0,
@@ -279,6 +305,7 @@ function InfoPanel() {
 
     useEffect(() => {
         fetchRouterInfo();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -286,6 +313,7 @@ function InfoPanel() {
         
         const intervalId = setInterval(fetchRouterInfo, 5000);
         return () => clearInterval(intervalId);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isAutoUpdate]);
 
     useEffect(() => {
@@ -325,14 +353,62 @@ function InfoPanel() {
 
             <Card>
                 <CardContent>
-                    <Typography variant="h6" gutterBottom>
-                        패킷 통신 로그
-                    </Typography>
+                    <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                        <Typography variant="h6">
+                            패킷 통신 로그
+                        </Typography>
+                        <Stack direction="row" spacing={2}>
+                            <TextField
+                                size="small"
+                                label="IP 검색"
+                                value={searchIP}
+                                onChange={(e) => {
+                                    setSearchIP(e.target.value);
+                                    setPage(0);
+                                }}
+                                placeholder="예: 192.168"
+                                sx={{ width: 180 }}
+                            />
+                            <FormControl size="small" sx={{ minWidth: 120 }}>
+                                <InputLabel>프로토콜</InputLabel>
+                                <Select
+                                    value={filterProtocol}
+                                    label="프로토콜"
+                                    onChange={(e) => {
+                                        setFilterProtocol(e.target.value);
+                                        setPage(0);
+                                    }}
+                                >
+                                    <MenuItem value="">전체</MenuItem>
+                                    <MenuItem value="TCP">TCP</MenuItem>
+                                    <MenuItem value="UDP">UDP</MenuItem>
+                                    <MenuItem value="ICMP">ICMP</MenuItem>
+                                </Select>
+                            </FormControl>
+                            <FormControl size="small" sx={{ minWidth: 120 }}>
+                                <InputLabel>표시 개수</InputLabel>
+                                <Select
+                                    value={rowsPerPage}
+                                    label="표시 개수"
+                                    onChange={(e) => {
+                                        setRowsPerPage(e.target.value);
+                                        setPage(0);
+                                    }}
+                                >
+                                    <MenuItem value={10}>10개씩</MenuItem>
+                                    <MenuItem value={25}>25개씩</MenuItem>
+                                    <MenuItem value={50}>50개씩</MenuItem>
+                                    <MenuItem value={100}>100개씩</MenuItem>
+                                    <MenuItem value={200}>200개씩</MenuItem>
+                                </Select>
+                            </FormControl>
+                        </Stack>
+                    </Box>
                     <TableContainer
                         component={Paper}
                         sx={{
-                            maxHeight: '500', // 제한된 높이 설정
-                            overflowY: 'auto', // 수직 스크롤 활성화
+                            maxHeight: '500',
+                            overflowY: 'auto',
                         }}
                     >
                         <Table stickyHeader>
@@ -357,34 +433,110 @@ function InfoPanel() {
                                         </Typography>
                                     </TableCell>
                                     </TableRow>
-                                ) : connectionLog.map((log, index) => {
-                                    
-                                    return log.source_ip === log.dest_ip ? null : (
-                                        <TableRow key={index}>
-                                        <TableCell>{log.protocol}</TableCell>
-                                        <TableCell
-                                            sx={{ cursor: 'pointer', color: 'blue' }}
-                                            onClick={() => setSelectedIP(log.source_ip)}
-                                        >
-                                            {log.source_ip}
-                                        </TableCell>
-                                        <TableCell
-                                            sx={{ cursor: 'pointer', color: 'blue' }}
-                                            onClick={() => setSelectedIP(log.dest_ip)}
-                                        >
-                                            {log.dest_ip}
-                                        </TableCell>
-                                        <TableCell>{log.source_port}</TableCell>
-                                        <TableCell>{log.dest_port}</TableCell>
-                                        <TableCell>{log.packet_count}</TableCell>
-                                        <TableCell>{log.byte_count}</TableCell>
-                                        </TableRow>
+                                ) : (() => {
+                                    // 필터링 로직
+                                    const filteredLogs = connectionLog.filter(log => {
+                                        if (log.source_ip === log.dest_ip) return false;
+                                        
+                                        // IP 검색 필터
+                                        if (searchIP && !log.source_ip.includes(searchIP) && !log.dest_ip.includes(searchIP)) {
+                                            return false;
+                                        }
+                                        
+                                        // 프로토콜 필터
+                                        if (filterProtocol && log.protocol !== filterProtocol) {
+                                            return false;
+                                        }
+                                        
+                                        return true;
+                                    });
+
+                                    // 페이지네이션
+                                    const paginatedLogs = filteredLogs.slice(
+                                        page * rowsPerPage,
+                                        page * rowsPerPage + rowsPerPage
                                     );
-                                })}
+
+                                    if (filteredLogs.length === 0) {
+                                        return (
+                                            <TableRow>
+                                                <TableCell colSpan={7} align="center">
+                                                    <Typography color="textSecondary" variant="body1">
+                                                        필터 조건에 맞는 로그가 없습니다.
+                                                    </Typography>
+                                                </TableCell>
+                                            </TableRow>
+                                        );
+                                    }
+
+                                    return paginatedLogs.map((log, index) => (
+                                        <TableRow key={page * rowsPerPage + index}>
+                                            <TableCell>{log.protocol}</TableCell>
+                                            <TableCell
+                                                sx={{ cursor: 'pointer', color: 'blue' }}
+                                                onClick={() => setSelectedIP(log.source_ip)}
+                                            >
+                                                {log.source_ip}
+                                            </TableCell>
+                                            <TableCell
+                                                sx={{ cursor: 'pointer', color: 'blue' }}
+                                                onClick={() => setSelectedIP(log.dest_ip)}
+                                            >
+                                                {log.dest_ip}
+                                            </TableCell>
+                                            <TableCell>{log.source_port}</TableCell>
+                                            <TableCell>{log.dest_port}</TableCell>
+                                            <TableCell>{log.packet_count}</TableCell>
+                                            <TableCell>{log.byte_count}</TableCell>
+                                        </TableRow>
+                                    ));
+                                })()}
                             </TableBody>
 
                         </Table>
                     </TableContainer>
+                    <Box display="flex" justifyContent="space-between" alignItems="center" mt={2}>
+                        <Typography variant="body2" color="textSecondary">
+                            {(() => {
+                                const filteredCount = connectionLog.filter(log => {
+                                    if (log.source_ip === log.dest_ip) return false;
+                                    if (searchIP && !log.source_ip.includes(searchIP) && !log.dest_ip.includes(searchIP)) return false;
+                                    if (filterProtocol && log.protocol !== filterProtocol) return false;
+                                    return true;
+                                }).length;
+                                return `총 ${filteredCount}개 로그 (전체: ${connectionLog.length}개)`;
+                            })()}
+                        </Typography>
+                        <Stack direction="row" spacing={2} alignItems="center">
+                            <Button
+                                size="small"
+                                disabled={page === 0}
+                                onClick={() => setPage(page - 1)}
+                            >
+                                이전
+                            </Button>
+                            <Typography variant="body2">
+                                {page + 1} / {Math.max(1, Math.ceil(connectionLog.filter(log => {
+                                    if (log.source_ip === log.dest_ip) return false;
+                                    if (searchIP && !log.source_ip.includes(searchIP) && !log.dest_ip.includes(searchIP)) return false;
+                                    if (filterProtocol && log.protocol !== filterProtocol) return false;
+                                    return true;
+                                }).length / rowsPerPage))}
+                            </Typography>
+                            <Button
+                                size="small"
+                                disabled={page >= Math.ceil(connectionLog.filter(log => {
+                                    if (log.source_ip === log.dest_ip) return false;
+                                    if (searchIP && !log.source_ip.includes(searchIP) && !log.dest_ip.includes(searchIP)) return false;
+                                    if (filterProtocol && log.protocol !== filterProtocol) return false;
+                                    return true;
+                                }).length / rowsPerPage) - 1}
+                                onClick={() => setPage(page + 1)}
+                            >
+                                다음
+                            </Button>
+                        </Stack>
+                    </Box>
                 </CardContent>
             </Card>
 
@@ -464,6 +616,7 @@ function NetworkVisualization({ devices, onDeviceSelect, selectedIP }) {
     const getStatusColor = (status) => {
         switch(status) {
             case 'online': return '#4caf50';
+            case 'monitored': return '#9c27b0'; // 보라색 (블랙/화이트리스트)
             case 'warning': return '#ff9800';
             case 'offline': return '#f44336';
             default: return '#9e9e9e';
